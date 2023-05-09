@@ -35,6 +35,8 @@ extern int optind, opterr, optopt;
 #define ACTION_PRINT_DEC	0x20
 #define ACTION_IMPORT		0x40
 #define ACTION_EXPORT		0x80
+#define ACTION_ERASE		0x100
+#define ACTION_DELETE		0x200
 
 #define EDIT_APPEND	0
 #define EDIT_WRITE	1
@@ -92,6 +94,28 @@ list_all_variables(void)
 
 	if (rc < 0) {
 		fprintf(stderr, "efivar: error listing variables: %m\n");
+		show_errors();
+		exit(1);
+	}
+}
+
+static void
+erase_all_variables(void)
+{
+	efi_guid_t *guid = NULL;
+	char *name = NULL;
+	int rc = 0;
+
+	while ((rc = efi_get_next_variable_name(&guid, &name)) > 0) {
+    if (efi_del_variable(*guid, name) < 0) {
+      printf("Error delete: %s\n", name);
+      continue;
+    }
+		printf("Success delete: %s\n", name);
+  }
+
+	if (rc < 0) {
+		fprintf(stderr, "efivar: error enumerate variables: %m\n");
 		show_errors();
 		exit(1);
 	}
@@ -172,6 +196,7 @@ show_variable_data(efi_guid_t guid, const char *name, uint32_t attributes,
 			if(attributes & (1 << i))
 				printf("\t%s\n", attribute_names[i]);
 		}
+    printf("Size: %d (0x%x)\n", (uint32_t)data_size, (uint32_t)data_size);
 		printf("Value:\n");
 
 		uint32_t index = 0;
@@ -254,6 +279,30 @@ show_variable(char *guid_name, int display_type)
 	free(name);
 	if (data)
 		free(data);
+}
+
+static void
+delete_variable(char *guid_name)
+{
+	efi_guid_t guid = efi_guid_empty;
+	char *name = NULL;
+	int rc;
+
+	parse_name(guid_name, &name, &guid);
+	if (!name || efi_guid_is_empty(&guid)) {
+		fprintf(stderr, "efivar: variable name error.\n");
+		show_errors();
+		exit(1);
+	}
+
+	errno = 0;
+	rc = efi_del_variable(guid, name);
+	if (rc < 0) {
+		fprintf(stderr, "efivar delete variable fail: %m\n");
+		show_errors();
+	}
+
+	free(name);
 }
 
 static void
@@ -429,10 +478,19 @@ usage(int ret)
 {
 	FILE *out = ret == 0 ? stdout : stderr;
 	fprintf(out,
-		"Usage: %s [OPTION...]\n"
+    "=======================================================================================================\n"
+		"                                         Usage help:\n"
+    "                             This is customized utility for debugging\n"
+    "-------------------------------------------------------------------------------------------------------\n"
+    "New support commands:\n"
+    "  -c, --Erase all writable vars          efivar -c\n"
+    "  -r, --Delete specific var              efivar -r -n <guid-name>\n"
+    "                                         Example: efivar -r -n eb704011-1402-11d3-8e77-00a0c969723b-MTC\n"
+    "-------------------------------------------------------------------------------------------------------\n"
+    "Retain original commands:\n"
 		"  -A, --attributes=<attributes>     attributes to use on append\n"
 		"  -l, --list                        list current variables\n"
-		"  -p, --print                       print variable specified by --name\n"
+		"  -p, --print                       print variable specified by --name (Add data size shown).\n"
 		"  -D, --dmpstore                    use DMPSTORE format when exporting\n"
 		"  -d, --print-decimal               print variable in decimal values specified\n"
 		"                                    by --name\n"
@@ -446,8 +504,9 @@ usage(int ret)
 		"  -w, --write                       write to variable specified by --name\n\n"
 		"Help options:\n"
 		"  -?, --help                        Show this help message\n"
-		"      --usage                       Display brief usage message\n",
-		program_invocation_short_name);
+		"      --usage                       Display brief usage message\n"
+    "=======================================================================================================\n"
+		);
 	exit(ret);
 }
 
@@ -467,7 +526,7 @@ int main(int argc, char *argv[])
 	uint32_t attributes = EFI_VARIABLE_NON_VOLATILE
 			      | EFI_VARIABLE_BOOTSERVICE_ACCESS
 			      | EFI_VARIABLE_RUNTIME_ACCESS;
-	char *sopts = "aA:Dde:f:i:Llpn:vw?";
+	char *sopts = "aA:Dde:f:i:Llcrpn:vw?";
 	struct option lopts[] = {
 		{"append", no_argument, 0, 'a'},
 		{"attributes", required_argument, 0, 'A'},
@@ -484,6 +543,8 @@ int main(int argc, char *argv[])
 		{"usage", no_argument, 0, 0},
 		{"verbose", no_argument, 0, 'v'},
 		{"write", no_argument, 0, 'w'},
+    {"erase", no_argument, 0, 'c'},
+    {"delete", no_argument, 0, 'r'},
 		{0, 0, 0, 0}
 	};
 
@@ -533,6 +594,12 @@ int main(int argc, char *argv[])
 			case 'w':
 				action |= ACTION_WRITE;
 				break;
+			case 'c':
+				action |= ACTION_ERASE;
+				break;
+			case 'r':
+				action |= ACTION_DELETE;
+				break;
 			case '?':
 				usage(EXIT_SUCCESS);
 				break;
@@ -552,6 +619,9 @@ int main(int argc, char *argv[])
 		case ACTION_LIST:
 			list_all_variables();
 			break;
+		case ACTION_ERASE:
+			erase_all_variables();
+			break;
 		case ACTION_PRINT:
 			show_variable(guid_name, SHOW_VERBOSE);
 			break;
@@ -567,6 +637,9 @@ int main(int argc, char *argv[])
 			prepare_data(datafile, &data, &data_size);
 			edit_variable(guid_name, data, data_size, attributes,
 				      EDIT_WRITE);
+			break;
+		case ACTION_DELETE | ACTION_PRINT:
+			delete_variable(guid_name);
 			break;
 		case ACTION_LIST_GUIDS: {
 			const struct efivar_guidname *guid = &efi_well_known_guids[0];
